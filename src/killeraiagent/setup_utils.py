@@ -267,19 +267,23 @@ def configure_build_environment(config: Dict[str, Any]) -> Tuple[str, List[str],
 
 def install_llama_cpp_python() -> bool:
     """Install llama-cpp-python from source with acceleration support."""
-    LATEST_VERSION = "0.3.8"  # Update as needed
+    LATEST_VERSION = "0.3.8"  # Default latest version
     logging.info("=== Installing llama-cpp-python with acceleration support ===")
     acc_config = get_acceleration_config()
     acc_type = acc_config.get("type", "cpu")
     if acc_type == "metal" and not (platform.system() == "Darwin" and platform.machine() == "arm64"):
-        logging.warning("Metal acceleration not supported on this platform; defaulting to CPU.")
+        logging.warning("Metal acceleration requested but unsupported; defaulting to CPU.")
         acc_type = "cpu"
-        acc_config["type"] = "cpu"
+        acc_config["type"] = acc_type
     elif acc_type == "cuda" and platform.system() == "Darwin":
         logging.warning("CUDA not available on macOS; switching to Metal if on Apple Silicon, else CPU.")
         acc_type = "metal" if platform.machine() == "arm64" else "cpu"
         acc_config["type"] = acc_type
     logging.info(f"Detected acceleration type: {acc_type}")
+    # For Apple Silicon with Metal, downgrade version for stability
+    if platform.system() == "Darwin" and platform.machine() == "arm64" and acc_type == "metal":
+        logging.info("Apple Silicon with Metal detected; downgrading llama-cpp-python version to 0.2.56 for stability.")
+        LATEST_VERSION = "0.2.56"
     _, cmake_args, env_vars = configure_build_environment(acc_config)
     
     try:
@@ -373,3 +377,6 @@ def main():
     install_llama_cpp_python()
     install_torch_with_cuda()
     logging.info("Setup complete.")
+
+if __name__ == "__main__":
+    main()

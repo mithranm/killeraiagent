@@ -9,26 +9,22 @@ a model path, backend choice, and optional chat template.
 
 import os
 import gc
-import re
 import time
 import logging
+from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Union, Tuple
 
 # Resource management (unchanged)
 from killeraiagent.resources import get_resource_manager
 
-logger = logging.getLogger(__name__)
-
-
-class ModelInfo:
+class LLMInfo:
     """Information about an LLM model."""
     
     def __init__(
         self,
         model_id: str,
-        model_path: Optional[str] = None,
-        model_type: str = "llamacpp",  # "llamacpp" or "hf" (huggingface)
+        model_path: Path = None,
+        model_engine: str = "llamacpp",  # "llamacpp" or "hf" (huggingface)
         context_length: int = 4096,
         requires_gpu: bool = False,
         model_size_gb: float = 0.0,
@@ -37,7 +33,7 @@ class ModelInfo:
     ):
         self.model_id = model_id
         self.model_path = model_path
-        self.model_type = model_type
+        self.model_engine = model_engine
         self.context_length = context_length
         self.requires_gpu = requires_gpu
         self.model_size_gb = model_size_gb
@@ -48,7 +44,7 @@ class ModelInfo:
         return {
             "model_id": self.model_id,
             "model_path": self.model_path,
-            "model_type": self.model_type,
+            "model_engine": self.model_engine,
             "context_length": self.context_length,
             "requires_gpu": self.requires_gpu,
             "model_size_gb": self.model_size_gb,
@@ -57,11 +53,11 @@ class ModelInfo:
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelInfo":
+    def from_dict(cls, data: Dict[str, Any]) -> "LLMInfo":
         return cls(
             model_id=data["model_id"],
             model_path=data.get("model_path"),
-            model_type=data.get("model_type", "llamacpp"),
+            model_engine=data.get("model_engine", "llamacpp"),
             context_length=data.get("context_length", 4096),
             requires_gpu=data.get("requires_gpu", False),
             model_size_gb=data.get("model_size_gb", 0.0),
@@ -69,11 +65,10 @@ class ModelInfo:
             quantization=data.get("quantization"),
         )
 
-
-class Model:
+class LLM:
     """Abstract base class for all LLM implementations."""
     
-    def __init__(self, model_info: ModelInfo, **kwargs):
+    def __init__(self, model_info: LLMInfo, **kwargs):
         self.model_info = model_info
         self.kwargs = kwargs
         self.model = None
@@ -91,23 +86,20 @@ class Model:
     ) -> Tuple[str, Any]:
         raise NotImplementedError("Subclasses must implement this method")
     
-    def embed(self, text: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
-        raise NotImplementedError("Subclasses must implement this method")
-    
     def load(self) -> bool:
         raise NotImplementedError("Subclasses must implement this method")
     
     def unload(self) -> None:
+        """Base unload method that clears references and triggers garbage collection."""
         self.model = None
         self.tokenizer = None
         self.is_loaded = False
         gc.collect()
 
-
-class LlamaCppModel(Model):
+class LlamaCppLLM(LLM):
     """Implementation for llama-cpp-python models."""
     
-    def __init__(self, model_info: ModelInfo, **kwargs):
+    def __init__(self, model_info: LLMInfo, **kwargs):
         super().__init__(model_info, **kwargs)
         self.chat_format = kwargs.get("chat_format", "custom")
         self.chat_template = kwargs.get("chat_template", (
@@ -127,14 +119,13 @@ class LlamaCppModel(Model):
             import llama_cpp
             model_path = self.model_info.model_path
             if not model_path or not os.path.exists(model_path):
-                logger.error(f"Model path not found: {model_path}")
+                logging.error(f"LLM path not found: {model_path}")
                 return False
-            logger.info(f"Loading llama-cpp model from: {model_path}")
-            # Optional: you could obtain hardware-optimized configuration here if desired.
+            logging.info(f"Loading llama-cpp model from: {model_path}")
             n_ctx = self.kwargs.get("n_ctx", self.model_info.context_length)
             n_threads = self.kwargs.get("n_threads", 4)
             n_gpu_layers = self.kwargs.get("n_gpu_layers", 0)
-            logger.info(f"Loading with context={n_ctx}, threads={n_threads}, gpu_layers={n_gpu_layers}")
+            logging.info(f"Loading with context={n_ctx}, threads={n_threads}, gpu_layers={n_gpu_layers}")
             model_kwargs = {
                 "model_path": model_path,
                 "n_ctx": n_ctx,
@@ -147,10 +138,10 @@ class LlamaCppModel(Model):
                 model_kwargs["n_gpu_layers"] = n_gpu_layers
             self.model = llama_cpp.Llama(**model_kwargs)
             self.is_loaded = True
-            logger.info(f"Successfully loaded {os.path.basename(model_path)}")
+            logging.info(f"Successfully loaded {os.path.basename(model_path)}")
             return True
         except Exception as e:
-            logger.error(f"Error loading llama-cpp model: {e}")
+            logging.error(f"Error loading llama-cpp model: {e}")
             self.model = None
             self.is_loaded = False
             return False
@@ -164,9 +155,16 @@ class LlamaCppModel(Model):
         repeat_penalty: float = 1.1, 
         **kwargs
     ) -> Tuple[str, Any]:
-        if not self.is_loaded and not self.load():
-            return "Error: Model not loaded", None
+        iloaded = False
+        if not self.is_loaded:
+            logging.warning("Model not loaded, automatically loading, will unload when done...")
+            iloaded = True
+            self.load()
         try:
+            # Ensure that the underlying model instance is callable.
+            if self.model is None or not callable(self.model):
+                logging.error("Model instance is not callable. Ensure that the llama-cpp model is loaded correctly.")
+                raise RuntimeError("LLM model is not properly loaded or callable.")
             gen_kwargs = {
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -181,7 +179,7 @@ class LlamaCppModel(Model):
                     gen_kwargs[k] = v
             start_time = time.time()
             completion = self.model(prompt, **gen_kwargs)
-            logger.debug(f"Generation took {time.time() - start_time:.2f}s")
+            logging.debug(f"Generation took {time.time() - start_time:.2f}s")
             if (isinstance(completion, dict)
                 and "choices" in completion
                 and len(completion["choices"]) > 0
@@ -189,38 +187,36 @@ class LlamaCppModel(Model):
                 text = completion["choices"][0]["text"].strip()
                 return text, completion
             else:
-                logger.warning(f"Unexpected completion format: {completion}")
+                logging.warning(f"Unexpected completion format: {completion}")
+                if iloaded:
+                    self.unload()
                 return str(completion), completion
         except Exception as e:
-            logger.error(f"Error in llamacpp generation: {e}")
-            return f"Error: {str(e)}", None
+            logging.error(f"Error in llamacpp generation: {e}")
+            raise
     
-    def embed(self, text: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
-        if not self.is_loaded and not self.load():
-            raise RuntimeError("Model not loaded")
-        single_input = isinstance(text, str)
-        texts = [text] if single_input else text
-        embeddings = []
-        for t in texts:
+    def unload(self) -> None:
+        """Properly unload the llama-cpp model to free memory resources."""
+        if self.model is not None:
             try:
-                emb = self.model.embed(t)
-                embeddings.append(emb)
+                logging.info(f"Unloading llama-cpp model: {self.model_info.model_id}")
+                if hasattr(self.model, 'close'):
+                    self.model.close()
+                    logging.debug("Successfully called close() method on model")
             except Exception as e:
-                logger.error(f"Error generating embedding: {e}")
-                raise
-        return embeddings[0] if single_input else embeddings
+                logging.warning(f"Error while trying to close the model: {e}")
+        super().unload()
 
-
-class HuggingFaceModel(Model):
+class HuggingFaceLLM(LLM):
     """Implementation for Hugging Face Transformers models."""
     
-    def __init__(self, model_info: ModelInfo, **kwargs):
+    def __init__(self, model_info: LLMInfo, **kwargs):
         super().__init__(model_info, **kwargs)
         self.model_architecture = None
         self.task = None
         self.device = kwargs.get("device", None)
         self.pipeline = None
-        self.chat_template = kwargs.get("chat_template", None)  # Optional chat template
+        self.chat_template = kwargs.get("chat_template", None)
     
     def _determine_device(self) -> str:
         if self.device:
@@ -236,16 +232,15 @@ class HuggingFaceModel(Model):
         if self.is_loaded and self.model is not None:
             return True
         try:
-            import torch
             import transformers
             model_id = self.model_info.model_path or self.model_info.model_id
-            logger.info(f"Loading Hugging Face model: {model_id}")
+            logging.info(f"Loading Hugging Face model: {model_id}")
             config = transformers.AutoConfig.from_pretrained(model_id)
             if hasattr(config, 'is_encoder_decoder') and config.is_encoder_decoder:
                 self.model_architecture = "seq2seq"
             else:
-                model_type = getattr(config, 'model_type', '').lower()
-                if model_type in ('t5', 'bart', 'pegasus', 'marian', 'mt5'):
+                model_engine = getattr(config, 'model_engine', '').lower()
+                if model_engine in ('t5', 'bart', 'pegasus', 'marian', 'mt5'):
                     self.model_architecture = "seq2seq"
                 else:
                     model_id_lower = model_id.lower()
@@ -256,14 +251,14 @@ class HuggingFaceModel(Model):
                         self.model_architecture = "causal"
             self.task = "text2text-generation" if self.model_architecture == "seq2seq" else "text-generation"
             device_name = self._determine_device()
-            logger.info(f"Using device: {device_name}")
+            logging.info(f"Using device: {device_name}")
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
             if self.model_architecture == "seq2seq":
-                self.model = transformers.AutoModelForSeq2SeqLM.from_pretrained(model_id)
-                logger.info(f"Loaded sequence-to-sequence model: {model_id}")
+                self.model = transformers.AutoLLMForSeq2SeqLM.from_pretrained(model_id)
+                logging.info(f"Loaded sequence-to-sequence model: {model_id}")
             else:
-                self.model = transformers.AutoModelForCausalLM.from_pretrained(model_id)
-                logger.info(f"Loaded causal language model: {model_id}")
+                self.model = transformers.AutoLLMForCausalLM.from_pretrained(model_id)
+                logging.info(f"Loaded causal language model: {model_id}")
             self.model.to(device_name)
             self.pipeline = transformers.pipeline(
                 self.task,
@@ -274,7 +269,7 @@ class HuggingFaceModel(Model):
             self.is_loaded = True
             return True
         except Exception as e:
-            logger.error(f"Error loading Hugging Face model: {e}")
+            logging.error(f"Error loading Hugging Face model: {e}")
             self.is_loaded = False
             return False
     
@@ -313,7 +308,7 @@ class HuggingFaceModel(Model):
                     gen_kwargs[k] = v
             start_time = time.time()
             result = self.pipeline(prompt, **gen_kwargs)
-            logger.debug(f"Generation took {time.time() - start_time:.2f}s")
+            logging.debug(f"Generation took {time.time() - start_time:.2f}s")
             if isinstance(result, list) and len(result) > 0:
                 if "generated_text" in result[0]:
                     text = result[0]["generated_text"]
@@ -321,39 +316,37 @@ class HuggingFaceModel(Model):
                         text = text[len(prompt):]
                     return text.strip(), result
                 else:
-                    logger.warning(f"Unexpected HF pipeline format: {result}")
+                    logging.warning(f"Unexpected HF pipeline format: {result}")
                     return str(result), result
             else:
-                logger.warning(f"Unexpected HF pipeline result type: {type(result)}")
+                logging.warning(f"Unexpected HF pipeline result type: {type(result)}")
                 return str(result), result
         except Exception as e:
-            logger.error(f"Error in Hugging Face generation: {e}")
-            return f"Error: {str(e)}", None
-    
-    def embed(self, text: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
-        if not self.is_loaded and not self.load():
-            raise RuntimeError("Model not loaded")
-        try:
-            import torch
-            single_input = isinstance(text, str)
-            texts = [text] if single_input else text
-            inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
-            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-            with torch.no_grad():
-                outputs = self.model(**inputs, output_hidden_states=True)
-            embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
-            return embeddings[0].tolist() if single_input else [emb.tolist() for emb in embeddings]
-        except Exception as e:
-            logger.error(f"Error generating embeddings: {e}")
+            logging.error(f"Error in Hugging Face generation: {e}")
             raise
 
+class NullModel(LLM):
+    """A null model that does nothing."""
+    
+    def __init__(self):
+        super().__init__(LLMInfo(model_id="null"))
+    
+    def generate(self, prompt: str, **kwargs) -> Tuple[str, Any]:
+        return "Null model: no generation", None
+    
+    def load(self) -> bool:
+        return True
+    
+    def unload(self) -> None:
+        pass
 
 def create_model(*, 
                  model_path: str, 
                  backend: str = "hf", 
                  chat_template: Optional[str] = None, 
-                 context_length: int = 4096, 
-                 **kwargs) -> Model:
+                 context_length: int = 4096,
+                 requires_gpu: Optional[bool] = None,
+                 **kwargs) -> LLM:
     """
     Factory function to create an LLM instance.
     
@@ -365,27 +358,24 @@ def create_model(*,
         **kwargs: Additional parameters to pass to the underlying model (e.g., n_threads, n_gpu_layers).
     
     Returns:
-        An instance of HuggingFaceModel or LlamaCppModel, based on the backend parameter.
+        An instance of HuggingFaceLLM or LlamaCppLLM, based on the backend parameter.
     """
-    # Use the basename (or a derived value) as the model_id
     model_id = os.path.basename(model_path)
     backend = backend.lower()
     if backend not in ("hf", "llamacpp"):
         raise ValueError("backend must be either 'hf' (Hugging Face) or 'llamacpp' (llama-cpp-python)")
     
-    # Create a ModelInfo instance – developers can override requires_gpu via kwargs if needed.
-    model_info = ModelInfo(
+    model_info = LLMInfo(
         model_id=model_id,
         model_path=model_path,
-        model_type=backend,
+        model_engine=backend,
         context_length=context_length,
-        requires_gpu=(backend == "hf"),  # By default, assume hf models require GPU; adjust as needed.
+        requires_gpu=requires_gpu,
         description=f"LLM created from {model_path}",
         quantization=kwargs.pop("quantization", None)
     )
     
-    # If a chat_template is provided, pass it along.
     if backend == "hf":
-        return HuggingFaceModel(model_info, chat_template=chat_template, **kwargs)
+        return HuggingFaceLLM(model_info, chat_template=chat_template, **kwargs)
     else:
-        return LlamaCppModel(model_info, chat_template=chat_template, **kwargs)
+        return LlamaCppLLM(model_info, chat_template=chat_template, **kwargs)
