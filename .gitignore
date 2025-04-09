@@ -1,0 +1,8 @@
+# Mithran
+.dirfilter
+
+# Python
+__pycache__/
+*.egg-info/
+*.egg
+*.pyc

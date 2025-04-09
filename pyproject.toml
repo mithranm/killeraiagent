@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "killeraiagent"
+version = "0.1.0"
+description = "Killer AI Agents (KAIA) - A modular, extensible platform for creating and managing AI agents"
+authors = [
+  { name = "Mithran Mohanraj", email = "mithran.mohanraj@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+keywords = ["ai", "llm", "agents", "rag", "llamacpp", "huggingface"]
+dependencies = [
+  "torch>=2.0.0",
+  "transformers>=4.30.0",
+  "llama-cpp-python>=0.3.8",
+  "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0.0",
+  "black>=23.0.0",
+  "mypy>=1.0.0",
+  "isort>=5.10.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["killeraiagent*"]
+
+[project.scripts]
+kaia-setup = "killeraiagent.setup_utils:main"
+
+[tool.black]
+line-length = 88
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
