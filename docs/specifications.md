@@ -358,7 +358,7 @@ The KAIA backend is designed for extension through:
 
 - macOS (10.15+)
 - Windows 10/11
-- Linux support planned for future releases
+- Ubuntu/Debian
 
 ### 14.2 Hardware Requirements
 
@@ -368,7 +368,7 @@ The KAIA backend is designed for extension through:
 
 ### 14.3 Python Requirements
 
-- Python 3.8+
+- Python 3.11+
 - Key dependencies: torch, transformers, llama-cpp-python
 
 ## 15. Testing Strategy
