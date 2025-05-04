@@ -1,5 +1,9 @@
+# OS
+.DS_Store
+
 # Mithran
 .dirfilter
+o.md
 
 # Python
 __pycache__/
